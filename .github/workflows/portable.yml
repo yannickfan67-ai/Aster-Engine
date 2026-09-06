@@ -1,0 +1,9 @@
+name: portable-engine
+on: [push, pull_request]
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile portable engine cores
+        run: make check-all
