@@ -3,316 +3,49 @@
 #include "aster.h"
 #include "graphics.h"
 
+#define CSS_ANY_TAG 255u
+typedef struct {uint8_t flags,scale,color_set;uint32_t color;} ParsedStyle;
 static int is_space(char c){return c==' '||c=='\t'||c=='\r'||c=='\n';}
 static char lower_ascii(char c){return c>='A'&&c<='Z'?(char)(c+('a'-'A')):c;}
-static int starts_ci(const char*s,const char*p){
-    if(!s||!p)return 0;
-    while(*p){if(!*s||lower_ascii(*s)!=lower_ascii(*p))return 0;s++;p++;}
-    return 1;
-}
-static int name_eq(const char*s,size_t n,const char*lit){
-    size_t i=0;
-    while(i<n&&lit[i]){if(lower_ascii(s[i])!=lower_ascii(lit[i]))return 0;i++;}
-    return i==n&&lit[i]==0;
-}
-static void copy_limited(char*d,size_t cap,const char*s,size_t n){
-    if(!d||!cap)return;
-    size_t i=0;while(i<n&&s&&s[i]&&i+1<cap){d[i]=s[i];i++;}d[i]=0;
-}
-
-static uint16_t store_bytes(AsterDocument*d,const char*s,size_t n){
-    if(!d||!s||!n||d->text_used>=ASTER_TEXT_CAP-1u)return 0;
-    size_t available=(size_t)(ASTER_TEXT_CAP-1u-d->text_used);
-    if(n>available)n=available;
-    uint16_t off=d->text_used;
-    for(size_t i=0;i<n;i++)d->text[d->text_used++]=s[i];
-    d->text[d->text_used]=0;
-    return off;
-}
-static int add_node(AsterDocument*d,int parent,uint8_t type,uint8_t tag,uint16_t off,uint16_t len){
-    if(!d||d->node_count>=ASTER_MAX_NODES)return -1;
-    int idx=(int)d->node_count++;
-    AsterNode*n=&d->nodes[idx];
-    n->type=type;n->tag=tag;n->parent=(int16_t)parent;n->first_child=-1;n->next_sibling=-1;
-    n->text_off=off;n->text_len=len;n->href_off=0;n->href_len=0;
-    if(parent>=0){
-        AsterNode*p=&d->nodes[parent];
-        if(p->first_child<0)p->first_child=(int16_t)idx;
-        else{
-            int c=p->first_child;
-            while(d->nodes[c].next_sibling>=0)c=d->nodes[c].next_sibling;
-            d->nodes[c].next_sibling=(int16_t)idx;
-        }
-    }
-    return idx;
-}
+static int starts_ci(const char*s,const char*p){if(!s||!p)return 0;while(*p){if(!*s||lower_ascii(*s)!=lower_ascii(*p))return 0;s++;p++;}return 1;}
+static int name_eq(const char*s,size_t n,const char*lit){size_t i=0;while(i<n&&lit[i]){if(lower_ascii(s[i])!=lower_ascii(lit[i]))return 0;i++;}return i==n&&lit[i]==0;}
+static void copy_limited(char*d,size_t cap,const char*s,size_t n){if(!d||!cap)return;size_t i=0;while(i<n&&s&&s[i]&&i+1<cap){d[i]=s[i];i++;}d[i]=0;}
+static int digit(char c){return c>='0'&&c<='9';}
+static int hexv(char c){if(c>='0'&&c<='9')return c-'0';c=lower_ascii(c);if(c>='a'&&c<='f')return c-'a'+10;return -1;}
+static uint16_t store_bytes(AsterDocument*d,const char*s,size_t n){if(!d||!s||!n||d->text_used>=ASTER_TEXT_CAP-1u)return 0;size_t a=(size_t)(ASTER_TEXT_CAP-1u-d->text_used);if(n>a)n=a;uint16_t off=d->text_used;for(size_t i=0;i<n;i++)d->text[d->text_used++]=s[i];d->text[d->text_used]=0;return off;}
+static int add_node(AsterDocument*d,int parent,uint8_t type,uint8_t tag,uint16_t off,uint16_t len){if(!d||d->node_count>=ASTER_MAX_NODES)return -1;int idx=(int)d->node_count++;AsterNode*n=&d->nodes[idx];n->type=type;n->tag=tag;n->parent=(int16_t)parent;n->first_child=-1;n->next_sibling=-1;n->text_off=off;n->text_len=len;n->href_off=0;n->href_len=0;n->src_off=0;n->src_len=0;n->width_hint=0;n->height_hint=0;n->style_flags=0;n->style_scale=0;n->style_color=0;if(parent>=0){AsterNode*p=&d->nodes[parent];if(p->first_child<0)p->first_child=(int16_t)idx;else{int c=p->first_child;while(d->nodes[c].next_sibling>=0)c=d->nodes[c].next_sibling;d->nodes[c].next_sibling=(int16_t)idx;}}return idx;}
 static uint8_t tag_id(const char*s,size_t n){
-    if(name_eq(s,n,"html"))return ASTER_TAG_HTML;
-    if(name_eq(s,n,"head"))return ASTER_TAG_HEAD;
-    if(name_eq(s,n,"body"))return ASTER_TAG_BODY;
-    if(name_eq(s,n,"title"))return ASTER_TAG_TITLE;
-    if(name_eq(s,n,"h1"))return ASTER_TAG_H1;
-    if(name_eq(s,n,"h2"))return ASTER_TAG_H2;
-    if(name_eq(s,n,"h3"))return ASTER_TAG_H3;
-    if(name_eq(s,n,"p"))return ASTER_TAG_P;
-    if(name_eq(s,n,"div"))return ASTER_TAG_DIV;
-    if(name_eq(s,n,"br"))return ASTER_TAG_BR;
-    if(name_eq(s,n,"hr"))return ASTER_TAG_HR;
-    if(name_eq(s,n,"a"))return ASTER_TAG_A;
-    if(name_eq(s,n,"ul"))return ASTER_TAG_UL;
-    if(name_eq(s,n,"ol"))return ASTER_TAG_OL;
-    if(name_eq(s,n,"li"))return ASTER_TAG_LI;
-    if(name_eq(s,n,"strong")||name_eq(s,n,"b"))return ASTER_TAG_STRONG;
-    if(name_eq(s,n,"em")||name_eq(s,n,"i"))return ASTER_TAG_EM;
-    if(name_eq(s,n,"code"))return ASTER_TAG_CODE;
-    if(name_eq(s,n,"span"))return ASTER_TAG_SPAN;
-    if(name_eq(s,n,"header"))return ASTER_TAG_HEADER;
-    if(name_eq(s,n,"footer"))return ASTER_TAG_FOOTER;
-    if(name_eq(s,n,"main"))return ASTER_TAG_MAIN;
-    if(name_eq(s,n,"nav"))return ASTER_TAG_NAV;
-    if(name_eq(s,n,"section"))return ASTER_TAG_SECTION;
-    if(name_eq(s,n,"article"))return ASTER_TAG_ARTICLE;
-    if(name_eq(s,n,"blockquote"))return ASTER_TAG_BLOCKQUOTE;
-    if(name_eq(s,n,"script"))return ASTER_TAG_SCRIPT;
-    if(name_eq(s,n,"style"))return ASTER_TAG_STYLE;
-    return ASTER_TAG_UNKNOWN;
-}
-static int is_void(uint8_t tag){return tag==ASTER_TAG_BR||tag==ASTER_TAG_HR;}
-static int is_block(uint8_t tag){
-    return tag==ASTER_TAG_BODY||tag==ASTER_TAG_H1||tag==ASTER_TAG_H2||tag==ASTER_TAG_H3||
-           tag==ASTER_TAG_P||tag==ASTER_TAG_DIV||tag==ASTER_TAG_UL||tag==ASTER_TAG_OL||
-           tag==ASTER_TAG_LI||tag==ASTER_TAG_HEADER||tag==ASTER_TAG_FOOTER||tag==ASTER_TAG_MAIN||
-           tag==ASTER_TAG_NAV||tag==ASTER_TAG_SECTION||tag==ASTER_TAG_ARTICLE||
-           tag==ASTER_TAG_BLOCKQUOTE||tag==ASTER_TAG_HR;
-}
-
-void aster_document_init(AsterDocument*d){
-    if(!d)return;
-    d->node_count=0;d->paint_count=0;d->text_used=0;d->document_height=0;d->title[0]=0;
-    (void)add_node(d,-1,ASTER_NODE_ROOT,ASTER_TAG_UNKNOWN,0,0);
-}
-static size_t decode_text(char*out,size_t cap,const char*s,size_t n){
-    if(!out||!cap)return 0;
-    size_t o=0;int pending_space=0;
-    for(size_t i=0;i<n&&o+1<cap;i++){
-        char c=s[i];
-        if(c=='&'){
-            if(i+3<n&&starts_ci(s+i,"&lt;")){c='<';i+=3;}
-            else if(i+3<n&&starts_ci(s+i,"&gt;")){c='>';i+=3;}
-            else if(i+4<n&&starts_ci(s+i,"&amp;")){c='&';i+=4;}
-            else if(i+5<n&&starts_ci(s+i,"&nbsp;")){c=' ';i+=5;}
-            else if(i+5<n&&starts_ci(s+i,"&quot;")){c='"';i+=5;}
-            else if(i+5<n&&starts_ci(s+i,"&apos;")){c='\'';i+=5;}
-        }
-        if(is_space(c)){pending_space=1;continue;}
-        if(pending_space&&o&&o+1<cap)out[o++]=' ';
-        pending_space=0;out[o++]=c;
-    }
-    out[o]=0;return o;
-}
-static void parse_href(AsterDocument*d,AsterNode*n,const char*s,size_t len){
-    size_t i=0;
-    while(i<len){
-        while(i<len&&is_space(s[i]))i++;
-        size_t name_start=i;
-        while(i<len&&!is_space(s[i])&&s[i]!='=')i++;
-        size_t name_len=i-name_start;
-        while(i<len&&is_space(s[i]))i++;
-        if(i>=len||s[i]!='='){while(i<len&&!is_space(s[i]))i++;continue;}
-        i++;
-        while(i<len&&is_space(s[i]))i++;
-        char quote=0;
-        if(i<len&&(s[i]=='\''||s[i]=='\"'))quote=s[i++];
-        size_t value_start=i;
-        if(quote)while(i<len&&s[i]!=quote)i++;
-        else while(i<len&&!is_space(s[i])&&s[i]!='>')i++;
-        size_t value_len=i-value_start;
-        if(quote&&i<len)i++;
-        if(name_eq(s+name_start,name_len,"href")&&value_len){
-            n->href_off=store_bytes(d,s+value_start,value_len);
-            n->href_len=(uint16_t)value_len;
-            return;
-        }
-    }
-}
-static const char*skip_raw_element(const char*p,uint8_t tag){
-    const char*end=tag==ASTER_TAG_SCRIPT?"</script":"</style";
-    while(*p&&!starts_ci(p,end))p++;
-    if(*p){while(*p&&*p!='>')p++;if(*p)p++;}
-    return p;
-}
-int aster_parse_html(AsterDocument*d,const char*html){
-    if(!d||!html)return 0;
-    aster_document_init(d);
-    int stack[40];int sp=1;stack[0]=0;
-    const char*p=html;
-    while(*p&&d->node_count<ASTER_MAX_NODES){
-        if(*p!='<'){
-            const char*start=p;
-            while(*p&&*p!='<')p++;
-            char tmp[768];
-            size_t n=decode_text(tmp,sizeof(tmp),start,(size_t)(p-start));
-            if(n){
-                uint16_t off=store_bytes(d,tmp,n);
-                int idx=add_node(d,stack[sp-1],ASTER_NODE_TEXT,ASTER_TAG_UNKNOWN,off,(uint16_t)n);
-                if(idx>=0&&d->nodes[stack[sp-1]].tag==ASTER_TAG_TITLE&&!d->title[0])
-                    copy_limited(d->title,sizeof(d->title),tmp,n);
-            }
-            continue;
-        }
-        if(starts_ci(p,"<!--")){
-            p+=4;
-            while(*p&&!(p[0]=='-'&&p[1]=='-'&&p[2]=='>'))p++;
-            if(*p)p+=3;
-            continue;
-        }
-        if(p[1]=='!'||p[1]=='?'){
-            while(*p&&*p!='>')p++;
-            if(*p)p++;
-            continue;
-        }
-        p++;
-        int closing=0;
-        if(*p=='/'){closing=1;p++;}
-        while(*p&&is_space(*p))p++;
-        const char*name=p;
-        while(*p&&!is_space(*p)&&*p!='>'&&*p!='/')p++;
-        size_t name_len=(size_t)(p-name);
-        uint8_t tag=tag_id(name,name_len);
-        if(closing){
-            while(*p&&*p!='>')p++;
-            if(*p)p++;
-            for(int i=sp-1;i>0;i--){if(d->nodes[stack[i]].tag==tag){sp=i;break;}}
-            continue;
-        }
-        const char*attrs=p;
-        while(*p&&*p!='>')p++;
-        size_t attrs_len=(size_t)(p-attrs);
-        size_t trim=attrs_len;
-        while(trim&&is_space(attrs[trim-1]))trim--;
-        int self_close=trim&&attrs[trim-1]=='/';
-        if(*p)p++;
-        int idx=add_node(d,stack[sp-1],ASTER_NODE_ELEMENT,tag,0,0);
-        if(idx<0)break;
-        if(tag==ASTER_TAG_A)parse_href(d,&d->nodes[idx],attrs,attrs_len);
-        if(tag==ASTER_TAG_SCRIPT||tag==ASTER_TAG_STYLE){p=skip_raw_element(p,tag);continue;}
-        if(!self_close&&!is_void(tag)&&sp<(int)(sizeof(stack)/sizeof(stack[0])))stack[sp++]=idx;
-    }
-    if(!d->title[0])copy_limited(d->title,sizeof(d->title),"Untitled page",13);
-    return d->node_count>1;
-}
-
-static int inherited_tag(const AsterDocument*d,int node,uint8_t wanted){
-    for(int n=node;n>=0;n=d->nodes[n].parent)if(d->nodes[n].tag==wanted)return 1;
-    return 0;
-}
-static const AsterNode*link_ancestor(const AsterDocument*d,int node){
-    for(int n=node;n>=0;n=d->nodes[n].parent)if(d->nodes[n].tag==ASTER_TAG_A&&d->nodes[n].href_len)return &d->nodes[n];
-    return 0;
-}
-static int hidden_node(const AsterDocument*d,int node){
-    return inherited_tag(d,node,ASTER_TAG_HEAD)||inherited_tag(d,node,ASTER_TAG_TITLE)||
-           inherited_tag(d,node,ASTER_TAG_SCRIPT)||inherited_tag(d,node,ASTER_TAG_STYLE);
-}
-static void style_for(const AsterDocument*d,int node,uint8_t*scale,uint8_t*flags,uint32_t*color){
-    *scale=1;*flags=0;*color=0x26394B;
-    if(inherited_tag(d,node,ASTER_TAG_H1)){*scale=2;*flags|=ASTER_PAINT_BOLD;*color=0x1D3550;}
-    else if(inherited_tag(d,node,ASTER_TAG_H2)){*flags|=ASTER_PAINT_BOLD;*color=0x244E73;}
-    else if(inherited_tag(d,node,ASTER_TAG_H3)){*flags|=ASTER_PAINT_BOLD;*color=0x315E80;}
-    if(inherited_tag(d,node,ASTER_TAG_STRONG))*flags|=ASTER_PAINT_BOLD;
-    if(inherited_tag(d,node,ASTER_TAG_CODE))*color=0x7B3F57;
-    if(link_ancestor(d,node)){*flags|=ASTER_PAINT_LINK;*color=0x2F74B7;}
-}
-static void emit_item(AsterDocument*d,int x,int y,int w,int h,uint8_t scale,uint8_t flags,uint32_t color,uint16_t off,uint16_t len,const AsterNode*link){
-    if(!d||d->paint_count>=ASTER_MAX_PAINT||!len)return;
-    AsterPaintItem*i=&d->paint[d->paint_count++];
-    i->x=(int16_t)x;i->y=(int16_t)y;i->w=(int16_t)w;i->h=(int16_t)h;i->scale=scale;i->flags=flags;i->color=color;i->text_off=off;i->text_len=len;
-    i->href_off=link?link->href_off:0;i->href_len=link?link->href_len:0;
-}
-static int line_height(uint8_t scale){return scale==2?52:24;}
-static int char_width(uint8_t scale){return scale==2?24:11;}
-static void layout_text_node(AsterDocument*d,int node,int*cx,int*cy,int left,int width){
-    AsterNode*n=&d->nodes[node];
-    const char*s=d->text+n->text_off;
-    uint8_t scale,flags;uint32_t color;
-    style_for(d,node,&scale,&flags,&color);
-    int cw=char_width(scale),lh=line_height(scale),right=left+width;
-    const AsterNode*link=link_ancestor(d,node);
-    uint16_t pos=0;
-    if(*cx<left)*cx=left;
-    while(pos<n->text_len){
-        while(pos<n->text_len&&s[pos]==' ')pos++;
-        if(pos>=n->text_len)break;
-        uint16_t start=pos;
-        while(pos<n->text_len&&s[pos]!=' ')pos++;
-        uint16_t end=pos;
-        int word_w=(int)(end-start)*cw;
-        if(*cx>left&&*cx+word_w>right){*cx=left;*cy+=lh;}
-        emit_item(d,*cx,*cy,word_w,lh,scale,flags,color,(uint16_t)(n->text_off+start),(uint16_t)(end-start),link);
-        *cx+=word_w+cw;
-    }
-}
-static void layout_walk(AsterDocument*d,int node,int*cx,int*cy,int left,int width){
-    if(node<0||hidden_node(d,node))return;
-    AsterNode*n=&d->nodes[node];
-    uint8_t tag=n->tag;
-    int block=is_block(tag);
-    if(block&&*cx!=left){*cx=left;*cy+=24;}
-    if(tag==ASTER_TAG_H1||tag==ASTER_TAG_H2||tag==ASTER_TAG_H3||tag==ASTER_TAG_P||
-       tag==ASTER_TAG_DIV||tag==ASTER_TAG_LI||tag==ASTER_TAG_SECTION||tag==ASTER_TAG_ARTICLE||
-       tag==ASTER_TAG_BLOCKQUOTE)*cy+=8;
-    int child_left=left,child_width=width;
-    if(tag==ASTER_TAG_LI){child_left=left+22;child_width=width>22?width-22:width;*cx=child_left;}
-    else if(tag==ASTER_TAG_BLOCKQUOTE){child_left=left+28;child_width=width>56?width-56:width;*cx=child_left;}
-    if(n->type==ASTER_NODE_TEXT)layout_text_node(d,node,cx,cy,left,width);
-    if(tag==ASTER_TAG_BR){*cx=left;*cy+=24;}
-    if(tag==ASTER_TAG_HR){*cx=left;*cy+=12;}
-    for(int child=n->first_child;child>=0;child=d->nodes[child].next_sibling)
-        layout_walk(d,child,cx,cy,child_left,child_width);
-    if(block&&n->type==ASTER_NODE_ELEMENT){
-        *cx=left;
-        *cy+=tag==ASTER_TAG_H1?20:(tag==ASTER_TAG_H2?14:(tag==ASTER_TAG_H3?10:8));
-    }
-}
-void aster_layout(AsterDocument*d,int viewport_width){
-    if(!d)return;
-    if(viewport_width<120)viewport_width=120;
-    d->paint_count=0;
-    int x=0,y=0;
-    layout_walk(d,0,&x,&y,0,viewport_width);
-    d->document_height=y+32;
-}
-void aster_paint(const AsterDocument*d,int x,int y,int width,int height,int scroll_y){
-    if(!d)return;
-    for(uint16_t k=0;k<d->paint_count;k++){
-        const AsterPaintItem*i=&d->paint[k];
-        int py=y+i->y-scroll_y;
-        if(py+i->h<y||py>y+height||i->x>=width||i->x+i->w<0)continue;
-        char tmp[160];
-        size_t n=i->text_len<sizeof(tmp)-1u?(size_t)i->text_len:sizeof(tmp)-1u;
-        for(size_t j=0;j<n;j++)tmp[j]=d->text[i->text_off+j];
-        tmp[n]=0;
-        uint32_t drawn=i->scale==2?gfx_display_text((uint32_t)(x+i->x),(uint32_t)py,tmp,i->color):gfx_text((uint32_t)(x+i->x),(uint32_t)py,tmp,i->color,1);
-        if(i->flags&ASTER_PAINT_LINK)gfx_line_h((uint32_t)(x+i->x),(uint32_t)(py+i->h-4),drawn,0x6BA5D8);
-    }
-}
-int aster_link_at(const AsterDocument*d,int x,int y,int scroll_y,char*url,size_t url_cap){
-    if(!d||!url||!url_cap)return 0;
-    url[0]=0;
-    int doc_y=y+scroll_y;
-    for(int k=(int)d->paint_count-1;k>=0;k--){
-        const AsterPaintItem*i=&d->paint[k];
-        if(!(i->flags&ASTER_PAINT_LINK)||!i->href_len)continue;
-        if(x<i->x||x>=i->x+i->w||doc_y<i->y||doc_y>=i->y+i->h)continue;
-        size_t n=i->href_len;
-        if(n>=url_cap)n=url_cap-1;
-        if((size_t)i->href_off+n>ASTER_TEXT_CAP)return 0;
-        for(size_t j=0;j<n;j++)url[j]=d->text[i->href_off+j];
-        url[n]=0;
-        return 1;
-    }
-    return 0;
-}
+#define T(lit,id) if(name_eq(s,n,lit))return id
+T("html",ASTER_TAG_HTML);T("head",ASTER_TAG_HEAD);T("body",ASTER_TAG_BODY);T("title",ASTER_TAG_TITLE);T("h1",ASTER_TAG_H1);T("h2",ASTER_TAG_H2);T("h3",ASTER_TAG_H3);T("p",ASTER_TAG_P);T("div",ASTER_TAG_DIV);T("br",ASTER_TAG_BR);T("hr",ASTER_TAG_HR);T("a",ASTER_TAG_A);T("ul",ASTER_TAG_UL);T("ol",ASTER_TAG_OL);T("li",ASTER_TAG_LI);if(name_eq(s,n,"strong")||name_eq(s,n,"b"))return ASTER_TAG_STRONG;if(name_eq(s,n,"em")||name_eq(s,n,"i"))return ASTER_TAG_EM;T("code",ASTER_TAG_CODE);T("span",ASTER_TAG_SPAN);T("header",ASTER_TAG_HEADER);T("footer",ASTER_TAG_FOOTER);T("main",ASTER_TAG_MAIN);T("nav",ASTER_TAG_NAV);T("section",ASTER_TAG_SECTION);T("article",ASTER_TAG_ARTICLE);T("blockquote",ASTER_TAG_BLOCKQUOTE);T("script",ASTER_TAG_SCRIPT);T("style",ASTER_TAG_STYLE);T("img",ASTER_TAG_IMG);T("button",ASTER_TAG_BUTTON);
+#undef T
+return ASTER_TAG_UNKNOWN;}
+static int is_void(uint8_t tag){return tag==ASTER_TAG_BR||tag==ASTER_TAG_HR||tag==ASTER_TAG_IMG;}
+static int is_block(uint8_t tag){return tag==ASTER_TAG_BODY||tag==ASTER_TAG_H1||tag==ASTER_TAG_H2||tag==ASTER_TAG_H3||tag==ASTER_TAG_P||tag==ASTER_TAG_DIV||tag==ASTER_TAG_UL||tag==ASTER_TAG_OL||tag==ASTER_TAG_LI||tag==ASTER_TAG_HEADER||tag==ASTER_TAG_FOOTER||tag==ASTER_TAG_MAIN||tag==ASTER_TAG_NAV||tag==ASTER_TAG_SECTION||tag==ASTER_TAG_ARTICLE||tag==ASTER_TAG_BLOCKQUOTE||tag==ASTER_TAG_HR||tag==ASTER_TAG_IMG;}
+void aster_document_init(AsterDocument*d){if(!d)return;d->node_count=0;d->paint_count=0;d->text_used=0;d->css_count=0;d->document_height=0;d->title[0]=0;(void)add_node(d,-1,ASTER_NODE_ROOT,ASTER_TAG_UNKNOWN,0,0);}
+static size_t decode_text(char*out,size_t cap,const char*s,size_t n){if(!out||!cap)return 0;size_t o=0;int pending_space=0;for(size_t i=0;i<n&&o+1<cap;i++){char c=s[i];if(c=='&'){if(i+3<n&&starts_ci(s+i,"&lt;")){c='<';i+=3;}else if(i+3<n&&starts_ci(s+i,"&gt;")){c='>';i+=3;}else if(i+4<n&&starts_ci(s+i,"&amp;")){c='&';i+=4;}else if(i+5<n&&starts_ci(s+i,"&nbsp;")){c=' ';i+=5;}else if(i+5<n&&starts_ci(s+i,"&quot;")){c='"';i+=5;}else if(i+5<n&&starts_ci(s+i,"&apos;")){c='\'';i+=5;}}if(is_space(c)){pending_space=1;continue;}if(pending_space&&o&&o+1<cap)out[o++]=' ';pending_space=0;out[o++]=c;}out[o]=0;return o;}
+static int parse_color(const char*s,size_t n,uint32_t*out){while(n&&is_space(*s)){s++;n--;}while(n&&is_space(s[n-1]))n--;if(n==7&&s[0]=='#'){uint32_t v=0;for(size_t i=1;i<7;i++){int h=hexv(s[i]);if(h<0)return 0;v=(v<<4)|(uint32_t)h;}*out=v;return 1;}if(n==4&&s[0]=='#'){int r=hexv(s[1]),g=hexv(s[2]),b=hexv(s[3]);if(r<0||g<0||b<0)return 0;*out=(uint32_t)((r*17)<<16|(g*17)<<8|(b*17));return 1;}if(name_eq(s,n,"black")){*out=0;return 1;}if(name_eq(s,n,"white")){*out=0xFFFFFF;return 1;}if(name_eq(s,n,"red")){*out=0xCC3344;return 1;}if(name_eq(s,n,"green")){*out=0x2E8B57;return 1;}if(name_eq(s,n,"blue")){*out=0x2468C4;return 1;}if(name_eq(s,n,"gray")||name_eq(s,n,"grey")){*out=0x777777;return 1;}if(name_eq(s,n,"purple")){*out=0x7A3E9D;return 1;}if(name_eq(s,n,"orange")){*out=0xD97824;return 1;}return 0;}
+static void apply_declaration(ParsedStyle*st,const char*name,size_t nn,const char*value,size_t vn){while(vn&&is_space(*value)){value++;vn--;}while(vn&&is_space(value[vn-1]))vn--;if(name_eq(name,nn,"color")){uint32_t c;if(parse_color(value,vn,&c)){st->color=c;st->color_set=1;}}else if(name_eq(name,nn,"font-weight")&&name_eq(value,vn,"bold"))st->flags|=ASTER_STYLE_BOLD;else if(name_eq(name,nn,"text-decoration")&&starts_ci(value,"underline"))st->flags|=ASTER_STYLE_UNDERLINE;else if(name_eq(name,nn,"display")&&name_eq(value,vn,"none"))st->flags|=ASTER_STYLE_HIDDEN;else if(name_eq(name,nn,"font-size")){unsigned px=0;size_t i=0;while(i<vn&&digit(value[i])){px=px*10u+(unsigned)(value[i]-'0');i++;}if(px>=22)st->scale=2;else if(px)st->scale=1;}}
+static ParsedStyle parse_style_text(const char*s,size_t len){ParsedStyle st={0,0,0,0};size_t p=0;while(p<len){while(p<len&&(is_space(s[p])||s[p]==';'))p++;size_t ns=p;while(p<len&&s[p]!=':'&&s[p]!=';')p++;size_t nn=p-ns;if(p>=len||s[p]!=':'){while(p<len&&s[p]!=';')p++;continue;}p++;size_t vs=p;while(p<len&&s[p]!=';')p++;size_t vn=p-vs;while(nn&&is_space(s[ns+nn-1]))nn--;apply_declaration(&st,s+ns,nn,s+vs,vn);}return st;}
+static void parse_css_rules(AsterDocument*d,const char*s,size_t len){size_t p=0;while(p<len&&d->css_count<ASTER_MAX_CSS_RULES){while(p<len&&is_space(s[p]))p++;size_t ss=p;while(p<len&&s[p]!='{')p++;if(p>=len)break;size_t sn=p-ss;p++;size_t ds=p;while(p<len&&s[p]!='}')p++;size_t dn=p-ds;if(p<len)p++;while(sn&&is_space(s[ss+sn-1]))sn--;while(sn&&is_space(s[ss])){ss++;sn--;}uint8_t tag=CSS_ANY_TAG;if(!(sn==1&&s[ss]=='*')){tag=tag_id(s+ss,sn);if(tag==ASTER_TAG_UNKNOWN)continue;}ParsedStyle st=parse_style_text(s+ds,dn);AsterCssRule*r=&d->css[d->css_count++];r->tag=tag;r->flags=st.flags;r->scale=st.scale;r->color_set=st.color_set;r->color=st.color;}}
+static int attr_value(const char*s,size_t len,const char*wanted,const char**value,size_t*vlen){size_t i=0;while(i<len){while(i<len&&is_space(s[i]))i++;size_t ns=i;while(i<len&&!is_space(s[i])&&s[i]!='='&&s[i]!='>')i++;size_t nn=i-ns;while(i<len&&is_space(s[i]))i++;if(i>=len||s[i]!='='){while(i<len&&!is_space(s[i]))i++;continue;}i++;while(i<len&&is_space(s[i]))i++;char q=0;if(i<len&&(s[i]=='\''||s[i]=='"'))q=s[i++];size_t vs=i;if(q)while(i<len&&s[i]!=q)i++;else while(i<len&&!is_space(s[i])&&s[i]!='>')i++;size_t vn=i-vs;if(q&&i<len)i++;if(name_eq(s+ns,nn,wanted)){*value=s+vs;*vlen=vn;return 1;}}return 0;}
+static uint16_t parse_dim(const char*s,size_t n){unsigned v=0;size_t i=0;while(i<n&&digit(s[i])){v=v*10u+(unsigned)(s[i]-'0');if(v>4096)v=4096;i++;}return (uint16_t)v;}
+static void parse_attrs(AsterDocument*d,AsterNode*n,const char*s,size_t len){const char*v;size_t vn;if(attr_value(s,len,"href",&v,&vn)&&vn){n->href_off=store_bytes(d,v,vn);n->href_len=(uint16_t)vn;}if(attr_value(s,len,"src",&v,&vn)&&vn){n->src_off=store_bytes(d,v,vn);n->src_len=(uint16_t)vn;}if(attr_value(s,len,"alt",&v,&vn)&&vn){char tmp[192];size_t dn=decode_text(tmp,sizeof(tmp),v,vn);n->text_off=store_bytes(d,tmp,dn);n->text_len=(uint16_t)dn;}if(attr_value(s,len,"width",&v,&vn))n->width_hint=parse_dim(v,vn);if(attr_value(s,len,"height",&v,&vn))n->height_hint=parse_dim(v,vn);if(attr_value(s,len,"style",&v,&vn)){ParsedStyle st=parse_style_text(v,vn);n->style_flags=st.flags;n->style_scale=st.scale;n->style_color=st.color_set?st.color:0;}}
+static const char*find_close(const char*p,const char*end){while(*p&&!starts_ci(p,end))p++;return p;}
+int aster_parse_html(AsterDocument*d,const char*html){if(!d||!html)return 0;aster_document_init(d);int stack[48];int sp=1;stack[0]=0;const char*p=html;while(*p&&d->node_count<ASTER_MAX_NODES){if(*p!='<'){const char*start=p;while(*p&&*p!='<')p++;char tmp[768];size_t n=decode_text(tmp,sizeof(tmp),start,(size_t)(p-start));if(n){uint16_t off=store_bytes(d,tmp,n);int idx=add_node(d,stack[sp-1],ASTER_NODE_TEXT,ASTER_TAG_UNKNOWN,off,(uint16_t)n);if(idx>=0&&d->nodes[stack[sp-1]].tag==ASTER_TAG_TITLE&&!d->title[0])copy_limited(d->title,sizeof(d->title),tmp,n);}continue;}if(starts_ci(p,"<!--")){p+=4;while(*p&&!(p[0]=='-'&&p[1]=='-'&&p[2]=='>'))p++;if(*p)p+=3;continue;}if(p[1]=='!'||p[1]=='?'){while(*p&&*p!='>')p++;if(*p)p++;continue;}p++;int closing=0;if(*p=='/'){closing=1;p++;}while(*p&&is_space(*p))p++;const char*name=p;while(*p&&!is_space(*p)&&*p!='>'&&*p!='/')p++;size_t name_len=(size_t)(p-name);uint8_t tag=tag_id(name,name_len);if(closing){while(*p&&*p!='>')p++;if(*p)p++;for(int i=sp-1;i>0;i--)if(d->nodes[stack[i]].tag==tag){sp=i;break;}continue;}const char*attrs=p;while(*p&&*p!='>')p++;size_t attrs_len=(size_t)(p-attrs),trim=attrs_len;while(trim&&is_space(attrs[trim-1]))trim--;int self_close=trim&&attrs[trim-1]=='/';if(*p)p++;int idx=add_node(d,stack[sp-1],ASTER_NODE_ELEMENT,tag,0,0);if(idx<0)break;parse_attrs(d,&d->nodes[idx],attrs,attrs_len);if(tag==ASTER_TAG_STYLE){const char*end=find_close(p,"</style");parse_css_rules(d,p,(size_t)(end-p));p=end;if(*p){while(*p&&*p!='>')p++;if(*p)p++;}continue;}if(tag==ASTER_TAG_SCRIPT){const char*end=find_close(p,"</script");p=end;if(*p){while(*p&&*p!='>')p++;if(*p)p++;}continue;}if(!self_close&&!is_void(tag)&&sp<(int)(sizeof(stack)/sizeof(stack[0])))stack[sp++]=idx;}if(!d->title[0])copy_limited(d->title,sizeof(d->title),"Untitled page",13);return d->node_count>1;}
+static int inherited_tag(const AsterDocument*d,int node,uint8_t wanted){for(int n=node;n>=0;n=d->nodes[n].parent)if(d->nodes[n].tag==wanted)return 1;return 0;}
+static const AsterNode*link_ancestor(const AsterDocument*d,int node){for(int n=node;n>=0;n=d->nodes[n].parent)if(d->nodes[n].tag==ASTER_TAG_A&&d->nodes[n].href_len)return &d->nodes[n];return 0;}
+static void apply_rule_for(const AsterDocument*d,uint8_t tag,ParsedStyle*st){for(uint8_t i=0;i<d->css_count;i++){const AsterCssRule*r=&d->css[i];if(r->tag!=CSS_ANY_TAG&&r->tag!=tag)continue;st->flags|=r->flags;if(r->scale)st->scale=r->scale;if(r->color_set){st->color_set=1;st->color=r->color;}}}
+static int hidden_node(const AsterDocument*d,int node){if(inherited_tag(d,node,ASTER_TAG_HEAD)||inherited_tag(d,node,ASTER_TAG_TITLE)||inherited_tag(d,node,ASTER_TAG_SCRIPT)||inherited_tag(d,node,ASTER_TAG_STYLE))return 1;for(int n=node;n>=0;n=d->nodes[n].parent){ParsedStyle st={0,0,0,0};apply_rule_for(d,d->nodes[n].tag,&st);if((st.flags|d->nodes[n].style_flags)&ASTER_STYLE_HIDDEN)return 1;}return 0;}
+static void style_for(const AsterDocument*d,int node,uint8_t*scale,uint8_t*flags,uint32_t*color){*scale=1;*flags=0;*color=0x26394B;if(inherited_tag(d,node,ASTER_TAG_H1)){*scale=2;*flags|=ASTER_PAINT_BOLD;*color=0x1D3550;}else if(inherited_tag(d,node,ASTER_TAG_H2)){*flags|=ASTER_PAINT_BOLD;*color=0x244E73;}else if(inherited_tag(d,node,ASTER_TAG_H3)){*flags|=ASTER_PAINT_BOLD;*color=0x315E80;}if(inherited_tag(d,node,ASTER_TAG_STRONG))*flags|=ASTER_PAINT_BOLD;if(inherited_tag(d,node,ASTER_TAG_CODE))*color=0x7B3F57;ParsedStyle st={0,0,0,0};int chain[48],count=0;for(int n=node;n>=0&&count<48;n=d->nodes[n].parent)chain[count++]=n;for(int i=count-1;i>=0;i--){const AsterNode*n=&d->nodes[chain[i]];apply_rule_for(d,n->tag,&st);st.flags|=n->style_flags;if(n->style_scale)st.scale=n->style_scale;if(n->style_color){st.color=n->style_color;st.color_set=1;}}if(st.scale)*scale=st.scale;if(st.color_set)*color=st.color;if(st.flags&ASTER_STYLE_BOLD)*flags|=ASTER_PAINT_BOLD;if(st.flags&ASTER_STYLE_UNDERLINE)*flags|=ASTER_PAINT_UNDERLINE;if(link_ancestor(d,node)){*flags|=ASTER_PAINT_LINK|ASTER_PAINT_UNDERLINE;*color=0x2F74B7;}}
+static void emit_text(AsterDocument*d,int x,int y,int w,int h,uint8_t scale,uint8_t flags,uint32_t color,uint16_t off,uint16_t len,const AsterNode*link){if(!d||d->paint_count>=ASTER_MAX_PAINT||!len)return;AsterPaintItem*i=&d->paint[d->paint_count++];i->x=(int16_t)x;i->y=(int16_t)y;i->w=(int16_t)w;i->h=(int16_t)h;i->scale=scale;i->flags=flags;i->color=color;i->text_off=off;i->text_len=len;i->href_off=link?link->href_off:0;i->href_len=link?link->href_len:0;i->src_off=0;i->src_len=0;}
+static void emit_image(AsterDocument*d,int x,int y,int w,int h,const AsterNode*n){if(!d||d->paint_count>=ASTER_MAX_PAINT||!n->src_len)return;AsterPaintItem*i=&d->paint[d->paint_count++];i->x=(int16_t)x;i->y=(int16_t)y;i->w=(int16_t)w;i->h=(int16_t)h;i->scale=1;i->flags=ASTER_PAINT_IMAGE;i->color=0x506070;i->text_off=n->text_off;i->text_len=n->text_len;i->href_off=0;i->href_len=0;i->src_off=n->src_off;i->src_len=n->src_len;}
+static int line_height(uint8_t scale){return scale==2?52:24;}static int char_width(uint8_t scale){return scale==2?24:11;}
+static void layout_text_node(AsterDocument*d,int node,int*cx,int*cy,int left,int width){AsterNode*n=&d->nodes[node];const char*s=d->text+n->text_off;uint8_t scale,flags;uint32_t color;style_for(d,node,&scale,&flags,&color);int cw=char_width(scale),lh=line_height(scale),right=left+width;const AsterNode*link=link_ancestor(d,node);uint16_t pos=0;if(*cx<left)*cx=left;while(pos<n->text_len){while(pos<n->text_len&&s[pos]==' ')pos++;if(pos>=n->text_len)break;uint16_t start=pos;while(pos<n->text_len&&s[pos]!=' ')pos++;uint16_t end=pos;int word_w=(int)(end-start)*cw;if(*cx>left&&*cx+word_w>right){*cx=left;*cy+=lh;}emit_text(d,*cx,*cy,word_w,lh,scale,flags,color,(uint16_t)(n->text_off+start),(uint16_t)(end-start),link);*cx+=word_w+cw;}}
+static void layout_walk(AsterDocument*d,int node,int*cx,int*cy,int left,int width){if(node<0||hidden_node(d,node))return;AsterNode*n=&d->nodes[node];uint8_t tag=n->tag;int block=is_block(tag);if(block&&*cx!=left){*cx=left;*cy+=24;}if(tag==ASTER_TAG_H1||tag==ASTER_TAG_H2||tag==ASTER_TAG_H3||tag==ASTER_TAG_P||tag==ASTER_TAG_DIV||tag==ASTER_TAG_LI||tag==ASTER_TAG_SECTION||tag==ASTER_TAG_ARTICLE||tag==ASTER_TAG_BLOCKQUOTE)*cy+=8;int child_left=left,child_width=width;if(tag==ASTER_TAG_LI){child_left=left+22;child_width=width>22?width-22:width;*cx=child_left;}else if(tag==ASTER_TAG_BLOCKQUOTE){child_left=left+28;child_width=width>56?width-56:width;*cx=child_left;}if(n->type==ASTER_NODE_TEXT)layout_text_node(d,node,cx,cy,left,width);if(tag==ASTER_TAG_BR){*cx=left;*cy+=24;}if(tag==ASTER_TAG_HR){*cx=left;*cy+=12;}if(tag==ASTER_TAG_IMG&&n->src_len){int iw=n->width_hint?n->width_hint:180,ih=n->height_hint?n->height_hint:120;if(iw>width)iw=width;if(ih>360)ih=360;emit_image(d,left,*cy,iw,ih,n);*cx=left;*cy+=ih+10;return;}for(int child=n->first_child;child>=0;child=d->nodes[child].next_sibling)layout_walk(d,child,cx,cy,child_left,child_width);if(block&&n->type==ASTER_NODE_ELEMENT){*cx=left;*cy+=tag==ASTER_TAG_H1?20:(tag==ASTER_TAG_H2?14:(tag==ASTER_TAG_H3?10:8));}}
+void aster_layout(AsterDocument*d,int viewport_width){if(!d)return;if(viewport_width<120)viewport_width=120;d->paint_count=0;int x=0,y=0;layout_walk(d,0,&x,&y,0,viewport_width);d->document_height=y+32;}
+static void item_text(const AsterDocument*d,const AsterPaintItem*i,char*out,size_t cap){size_t n=i->text_len<cap-1u?(size_t)i->text_len:cap-1u;if((size_t)i->text_off+n>ASTER_TEXT_CAP)n=0;for(size_t j=0;j<n;j++)out[j]=d->text[i->text_off+j];out[n]=0;}
+void aster_paint(const AsterDocument*d,int x,int y,int width,int height,int scroll_y){if(!d)return;for(uint16_t k=0;k<d->paint_count;k++){const AsterPaintItem*i=&d->paint[k];int py=y+i->y-scroll_y;if(py+i->h<y||py>y+height||i->x>=width||i->x+i->w<0)continue;if(i->flags&ASTER_PAINT_IMAGE){char uri[256];size_t n=i->src_len<sizeof(uri)-1u?i->src_len:sizeof(uri)-1u;if((size_t)i->src_off+n>ASTER_TEXT_CAP)n=0;for(size_t j=0;j<n;j++)uri[j]=d->text[i->src_off+j];uri[n]=0;if(!uri[0]||!gfx_image_uri((uint32_t)(x+i->x),(uint32_t)py,(uint32_t)i->w,(uint32_t)i->h,uri)){gfx_line_h((uint32_t)(x+i->x),(uint32_t)py,(uint32_t)i->w,0x9AA8B5);gfx_line_h((uint32_t)(x+i->x),(uint32_t)(py+i->h-1),(uint32_t)i->w,0x9AA8B5);char alt[160];item_text(d,i,alt,sizeof(alt));gfx_text((uint32_t)(x+i->x+6),(uint32_t)(py+6),alt[0]?alt:"[image]",0x667788,1);}continue;}char tmp[160];item_text(d,i,tmp,sizeof(tmp));uint32_t drawn=i->scale==2?gfx_display_text((uint32_t)(x+i->x),(uint32_t)py,tmp,i->color):gfx_text((uint32_t)(x+i->x),(uint32_t)py,tmp,i->color,1);if(i->flags&(ASTER_PAINT_LINK|ASTER_PAINT_UNDERLINE))gfx_line_h((uint32_t)(x+i->x),(uint32_t)(py+i->h-4),drawn,(i->flags&ASTER_PAINT_LINK)?0x6BA5D8:i->color);}}
+int aster_link_at(const AsterDocument*d,int x,int y,int scroll_y,char*url,size_t url_cap){if(!d||!url||!url_cap)return 0;url[0]=0;int doc_y=y+scroll_y;for(int k=(int)d->paint_count-1;k>=0;k--){const AsterPaintItem*i=&d->paint[k];if(!(i->flags&ASTER_PAINT_LINK)||!i->href_len)continue;if(x<i->x||x>=i->x+i->w||doc_y<i->y||doc_y>=i->y+i->h)continue;size_t n=i->href_len;if(n>=url_cap)n=url_cap-1;if((size_t)i->href_off+n>ASTER_TEXT_CAP)return 0;for(size_t j=0;j<n;j++)url[j]=d->text[i->href_off+j];url[n]=0;return 1;}return 0;}
 int aster_document_height(const AsterDocument*d){return d?d->document_height:0;}
 uint32_t aster_api_version(void){return ASTER_API_VERSION;}
 const char*aster_version(void){return ASTER_VERSION;}
