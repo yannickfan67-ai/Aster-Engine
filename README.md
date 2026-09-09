@@ -27,3 +27,6 @@ Implemented today:
 - `src/aster.c` — current engine implementation
 
 The current `src/aster.c` mirrors the tested UN_Orion integration and uses the Orion graphics API as its first platform backend. The next engine milestone is extracting that paint backend behind a small adapter so the parser/layout core can be tested on a host PC independently of the OS.
+
+## CSS selectors (0.3.1)
+Aster supports `*`, tag, `.class`, `#id`, `tag.class`, `tag#id`, and comma-separated simple selector lists. Descendant, child, attribute and pseudo selectors remain intentionally unsupported. ID/class/tag specificity is applied for color and size within this compact cascade.
