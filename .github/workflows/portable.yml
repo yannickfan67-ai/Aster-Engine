@@ -1,9 +1,11 @@
-name: portable-engine
+name: portable-core
 on: [push, pull_request]
 jobs:
   compile:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Compile portable engine cores
+      - name: Run parser CSS and image smoke
+        run: cc -std=c11 -Wall -Wextra -Werror -Iinclude tests/parser_smoke.c src/aster.c src/platform.c -o /tmp/aster-smoke && /tmp/aster-smoke
+      - name: Compile x86_64, AArch64 and RISC-V64 cores
         run: make check-all
